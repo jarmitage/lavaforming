@@ -6,6 +6,13 @@ import fire
 import sys
 from pathlib import Path
 
+def get_resolution(input_path: str) -> float:
+    """
+    Get the resolution from the input path.
+    """
+    with rasterio.open(input_path) as src:
+        return src.res[0]
+
 def resample_dem(input_path: str, resolution: float = 20.0, output_path: str = None) -> None:
     """
     Resample a DEM to a coarser resolution using bilinear interpolation.
