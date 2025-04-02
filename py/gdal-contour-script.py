@@ -7,6 +7,7 @@ from osgeo import gdal
 import numpy as np
 import rasterio
 from rasterio.plot import show
+from tqdm import tqdm
 
 def create_contours_with_gdal(dem_path, output_vector, interval=10, attribute_name='elevation'):
     """
@@ -45,23 +46,23 @@ def create_contours_with_gdal(dem_path, output_vector, interval=10, attribute_na
         print(f"Error generating contour lines: {e}")
         return None
 
-def load_asc_file(asc_path):
+def load_raster_file(raster_path):
     """
-    Load an ASC file into a numpy array with its georeferencing information
+    Load a raster file (ASC, TIF, etc.) into a numpy array with its georeferencing information
     
     Parameters:
-    asc_path (str): Path to the ASC file
+    raster_path (str): Path to the raster file
     
     Returns:
     tuple: (data array, transform, nodata value)
     """
-    with rasterio.open(asc_path) as src:
+    with rasterio.open(raster_path) as src:
         data = src.read(1)
         transform = src.transform
         nodata = src.nodata
     return data, transform, nodata
 
-def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_path=None, figsize=(12, 10), interval=None, lava_zoom=1.0):
+def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_path=None, figsize=(12, 10), interval=None, lava_zoom=1.0, vent=None, vent_zoom=1.0, cmap='terrain', show_window=True):
     """
     Plot DEM with overlay of contour lines and optional lava flow data
     
@@ -73,6 +74,10 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
     figsize (tuple): Figure size in inches
     interval (int): Contour interval in meters
     lava_zoom (float): Zoom level for the lava extent
+    vent (tuple): (x, y) coordinates of the vent location to center the plot
+    vent_zoom (float): Zoom level for the vent-centered view (1.0 = no zoom)
+    cmap (str): Matplotlib colormap name for DEM visualization (default: 'terrain')
+    show_window (bool): Whether to display the plot window (default: True)
     
     Returns:
     fig, ax: The matplotlib figure and axis objects
@@ -88,16 +93,16 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
     # Read the contour lines
     contours = gpd.read_file(contour_shapefile)
     
-    # Create the figure
-    fig, ax = plt.subplots(figsize=figsize)
+    # Create the figure with constrained layout
+    fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
     
     # Plot the DEM as background
-    show(dem, ax=ax, cmap='terrain', title='Topographic Map with Contour Lines and Lava Flow',
+    show(dem, ax=ax, cmap=cmap, title='Topographic Map with Contour Lines and Lava Flow',
          extent=extent)
     
     # If lava data is provided, plot it as an overlay and zoom to its extent
     if lava_path:
-        lava_data, lava_transform, lava_nodata = load_asc_file(lava_path)
+        lava_data, lava_transform, lava_nodata = load_raster_file(lava_path)
         # Calculate the lava extent from its transform
         lava_extent = [
             lava_transform[2],  # left
@@ -113,9 +118,15 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
             vmin, vmax = np.percentile(lava_valid, [2, 98])  # Robust min/max
             lava_masked = np.clip(lava_masked, vmin, vmax)
         # Plot lava with transparency where there is no lava
-        lava_img = ax.imshow(lava_masked, extent=lava_extent, cmap='magma', alpha=0.7)
-        # Add colorbar for lava
-        lava_cbar = fig.colorbar(lava_img, ax=ax, label='Lava Flow Thickness (m)')
+        lava_img = ax.imshow(lava_masked, extent=lava_extent, cmap='hot', alpha=0.7)
+        # Add colorbar for lava - adjust position and size with fixed number of ticks
+        lava_cbar = fig.colorbar(lava_img, ax=ax, label='Lava Flow Thickness (m)', 
+                                location='right', shrink=0.8, pad=0.02)
+        # Set fixed number of ticks (e.g., 5 ticks)
+        tick_count = 5
+        tick_values = np.linspace(lava_masked.min(), lava_masked.max(), tick_count)
+        lava_cbar.set_ticks(tick_values)
+        lava_cbar.set_ticklabels([f'{val:.1f}' for val in tick_values])
         # Zoom out by the specified lava_zoom factor
         ax.set_xlim(lava_extent[0] - (lava_extent[1] - lava_extent[0]) * (lava_zoom - 1),
                     lava_extent[1] + (lava_extent[1] - lava_extent[0]) * (lava_zoom - 1))
@@ -125,9 +136,9 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
     # Plot the contour lines
     contours.plot(ax=ax, color='black', linewidth=0.5)
     
-    # Add a colorbar for the DEM
-    sm = plt.cm.ScalarMappable(cmap='terrain', norm=plt.Normalize(vmin=dem.min(), vmax=dem.max()))
-    dem_cbar = fig.colorbar(sm, ax=ax)
+    # Add a colorbar for the DEM - adjust position and size
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=dem.min(), vmax=dem.max()))
+    dem_cbar = fig.colorbar(sm, ax=ax, location='left', shrink=0.8, pad=0.02)
     dem_cbar.set_label('Elevation (meters)')
     
     # Add some map elements
@@ -138,26 +149,57 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
                 transform=ax.transAxes, bbox=dict(facecolor='white', alpha=0.7),
                 verticalalignment='top')
     
+    # If vent location is provided, center the plot around it
+    if vent:
+        x, y = vent
+        # Calculate plot extent based on the DEM dimensions and vent zoom
+        width = (extent[1] - extent[0]) / vent_zoom
+        height = (extent[3] - extent[2]) / vent_zoom
+        ax.set_xlim(x - width/2, x + width/2)
+        ax.set_ylim(y - height/2, y + height/2)
+        
+        # Plot vent location
+        ax.plot(x, y, 'r^', markersize=3, label='Vent')
+        ax.legend()
+    
     # Save the figure if output path is provided
     if output_path:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        print(f"Map saved to {output_path}")
     
-    # Show the plot
-    plt.show()
+    # Show the plot only if show_window is True
+    if show_window:
+        plt.show()
     
     return fig, ax
 
-def main(input_file: str, output_path: str | None = None, interval: int = 10, lava_file: str | None = None, lava_zoom: float = 1.0):
+def main(input_file: str, output_path: str | None = None, interval: int = 10, 
+         lava_file: str | None = None, lava_folder: str | None = None, lava_zoom: float = 1.0, 
+         vent: tuple | None = None, vent_zoom: float = 1.0, cmap: str = 'terrain', 
+         show_window: bool = True):
     """Generate a contour map from a DEM file with optional lava flow overlay.
     
     Args:
         input_file: Path to input DEM file
         output_path: Path for the output map image (optional)
         interval: Contour interval in meters
-        lava_file: Path to lava flow ASC file (optional)
+        lava_file: Path to single lava flow ASC file (optional)
+        lava_folder: Path to folder containing multiple lava flow ASC files (optional)
         lava_zoom: Zoom level for the lava extent
+        vent: Vent location as (x,y) coordinates tuple
+        vent_zoom: Zoom level for the vent-centered view (default=1.0, higher values = more zoom)
+        cmap: Matplotlib colormap name for DEM visualization (default: 'terrain')
+        show_window: Whether to display the plot window (default: True)
     """
+    # Parse vent coordinates if provided
+    vent_coords = None
+    if vent:
+        try:
+            x, y = float(vent[0]), float(vent[1])
+            vent_coords = (x, y)
+        except (ValueError, IndexError):
+            print("Error: Vent coordinates must be provided as two numbers (e.g., --vent 326746 376249)")
+            return
+
     # Create output directory if needed
     if output_path:
         output_dir = os.path.dirname(output_path)
@@ -174,8 +216,51 @@ def main(input_file: str, output_path: str | None = None, interval: int = 10, la
         interval=interval
     )
     
-    if contour_file:
-        # Plot the contours over the DEM with optional lava flow
+    if not contour_file:
+        return
+
+    if lava_folder:
+        # Process all ASC and TIF files in the lava folder
+        tqdm.write(f"Scanning folder: {lava_folder}")
+        lava_files = [f for f in os.listdir(lava_folder) if f.lower().endswith(('.asc', '.tif', '.tiff'))]
+        tqdm.write(f"Found {len(lava_files)} raster files\n")
+        
+        # Add progress bar
+        for lava_filename in tqdm(lava_files, desc="Processing lava files"):
+            try:
+                lava_path = os.path.join(lava_folder, lava_filename)
+                
+                # Generate output filename based on the lava filename
+                if output_path:
+                    base_name = os.path.splitext(output_path)[0]
+                    ext = os.path.splitext(output_path)[1]
+                    current_output = f"{base_name}_{os.path.splitext(lava_filename)[0]}{ext}"
+                else:
+                    current_output = None
+                
+                # Close any existing figures to prevent memory issues
+                plt.close('all')
+                
+                plot_dem_with_contours(
+                    input_file,
+                    contour_file,
+                    lava_path=lava_path,
+                    output_path=current_output,
+                    figsize=(12, 10),
+                    interval=interval,
+                    lava_zoom=lava_zoom,
+                    vent=vent_coords,
+                    vent_zoom=vent_zoom,
+                    cmap=cmap,
+                    show_window=show_window
+                )
+                if current_output:
+                    tqdm.write(f"Saved: {os.path.basename(current_output)}")
+            except Exception as e:
+                tqdm.write(f"\nError processing {lava_filename}: {str(e)}")
+                continue
+    elif lava_file:
+        # Process single lava file as before
         plot_dem_with_contours(
             input_file,
             contour_file,
@@ -183,7 +268,11 @@ def main(input_file: str, output_path: str | None = None, interval: int = 10, la
             output_path=output_path,
             figsize=(12, 10),
             interval=interval,
-            lava_zoom=lava_zoom
+            lava_zoom=lava_zoom,
+            vent=vent_coords,
+            vent_zoom=vent_zoom,
+            cmap=cmap,
+            show_window=show_window
         )
 
 if __name__ == "__main__":
