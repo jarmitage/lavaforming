@@ -131,7 +131,7 @@ for total_volume in tqdm(volume_range, desc="Running Molasses simulations"):
     subprocess.run(f"./molasses_2022 {config_path}", shell=True, stderr=subprocess.DEVNULL)
     
     # Process and save the output
-    dem_asc = f"{dem_file}_{events.replace(',', '_')}_{str(int(total_volume))}"
+    dem_asc = f"{dem_file}_{events.replace(',', '_')}_{str(int(total_volume)).zfill(10)}"
     output_path = os.path.join(output_dir, dem_asc)
     
     # Converts molasses data from CSV to raster and save as .asc file in the output directory

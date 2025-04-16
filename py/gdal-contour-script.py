@@ -62,7 +62,7 @@ def load_raster_file(raster_path):
         nodata = src.nodata
     return data, transform, nodata
 
-def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_path=None, figsize=(12, 10), interval=None, lava_zoom=1.0, vent=None, vent_zoom=1.0, cmap='terrain', show_window=True):
+def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_path=None, figsize=(12, 10), interval=None, lava_zoom=1.0, vent=None, vent_zoom=1.0, cmap='terrain', show_window=True, show_elevation_bar=False, show_thickness_bar=False):
     """
     Plot DEM with overlay of contour lines and optional lava flow data
     
@@ -78,6 +78,8 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
     vent_zoom (float): Zoom level for the vent-centered view (1.0 = no zoom)
     cmap (str): Matplotlib colormap name for DEM visualization (default: 'terrain')
     show_window (bool): Whether to display the plot window (default: True)
+    show_elevation_bar (bool): Whether to show the elevation colorbar (default: False)
+    show_thickness_bar (bool): Whether to show the lava thickness colorbar (default: False)
     
     Returns:
     fig, ax: The matplotlib figure and axis objects
@@ -120,13 +122,14 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
         # Plot lava with transparency where there is no lava
         lava_img = ax.imshow(lava_masked, extent=lava_extent, cmap='hot', alpha=0.7)
         # Add colorbar for lava - adjust position and size with fixed number of ticks
-        lava_cbar = fig.colorbar(lava_img, ax=ax, label='Lava Flow Thickness (m)', 
-                                location='right', shrink=0.8, pad=0.02)
-        # Set fixed number of ticks (e.g., 5 ticks)
-        tick_count = 5
-        tick_values = np.linspace(lava_masked.min(), lava_masked.max(), tick_count)
-        lava_cbar.set_ticks(tick_values)
-        lava_cbar.set_ticklabels([f'{val:.1f}' for val in tick_values])
+        if show_thickness_bar:
+            lava_cbar = fig.colorbar(lava_img, ax=ax, label='Lava Flow Thickness (m)', 
+                                    location='right', shrink=0.8, pad=0.02)
+            # Set fixed number of ticks (e.g., 5 ticks)
+            tick_count = 5
+            tick_values = np.linspace(lava_masked.min(), lava_masked.max(), tick_count)
+            lava_cbar.set_ticks(tick_values)
+            lava_cbar.set_ticklabels([f'{val:.1f}' for val in tick_values])
         # Zoom out by the specified lava_zoom factor
         ax.set_xlim(lava_extent[0] - (lava_extent[1] - lava_extent[0]) * (lava_zoom - 1),
                     lava_extent[1] + (lava_extent[1] - lava_extent[0]) * (lava_zoom - 1))
@@ -137,9 +140,10 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
     contours.plot(ax=ax, color='black', linewidth=0.5)
     
     # Add a colorbar for the DEM - adjust position and size
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=dem.min(), vmax=dem.max()))
-    dem_cbar = fig.colorbar(sm, ax=ax, location='left', shrink=0.8, pad=0.02)
-    dem_cbar.set_label('Elevation (meters)')
+    if show_elevation_bar:
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=dem.min(), vmax=dem.max()))
+        dem_cbar = fig.colorbar(sm, ax=ax, location='left', shrink=0.8, pad=0.02)
+        dem_cbar.set_label('Elevation (meters)')
     
     # Add some map elements
     ax.set_xlabel('Easting')
@@ -175,7 +179,7 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
 def main(input_file: str, output_path: str | None = None, interval: int = 10, 
          lava_file: str | None = None, lava_folder: str | None = None, lava_zoom: float = 1.0, 
          vent: tuple | None = None, vent_zoom: float = 1.0, cmap: str = 'terrain', 
-         show_window: bool = True):
+         show_window: bool = True, show_elevation_bar: bool = False, show_thickness_bar: bool = False):
     """Generate a contour map from a DEM file with optional lava flow overlay.
     
     Args:
@@ -189,6 +193,8 @@ def main(input_file: str, output_path: str | None = None, interval: int = 10,
         vent_zoom: Zoom level for the vent-centered view (default=1.0, higher values = more zoom)
         cmap: Matplotlib colormap name for DEM visualization (default: 'terrain')
         show_window: Whether to display the plot window (default: True)
+        show_elevation_bar: Whether to show the elevation colorbar (default: False)
+        show_thickness_bar: Whether to show the lava thickness colorbar (default: False)
     """
     # Parse vent coordinates if provided
     vent_coords = None
@@ -252,7 +258,9 @@ def main(input_file: str, output_path: str | None = None, interval: int = 10,
                     vent=vent_coords,
                     vent_zoom=vent_zoom,
                     cmap=cmap,
-                    show_window=show_window
+                    show_window=show_window,
+                    show_elevation_bar=show_elevation_bar,
+                    show_thickness_bar=show_thickness_bar
                 )
                 if current_output:
                     tqdm.write(f"Saved: {os.path.basename(current_output)}")
@@ -272,7 +280,9 @@ def main(input_file: str, output_path: str | None = None, interval: int = 10,
             vent=vent_coords,
             vent_zoom=vent_zoom,
             cmap=cmap,
-            show_window=show_window
+            show_window=show_window,
+            show_elevation_bar=show_elevation_bar,
+            show_thickness_bar=show_thickness_bar
         )
 
 if __name__ == "__main__":

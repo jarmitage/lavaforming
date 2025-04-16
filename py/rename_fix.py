@@ -2,13 +2,13 @@ import os
 import re
 
 # Set the directory containing your files
-directory = "/Users/jackarmitage/Dropbox/downloads/20250401_230633_eldvorp_md_2x2_trench_sketch_2_326746_376249/"  # Update this to your directory path
+directory = "/Users/jackarmitage/Dropbox/downloads/lavadata/20250414_124137_eldvorp_md_2x2_trench_sketch_3_326699_378345/"  # Update this to your directory path
 
 # Define the padding length (how many digits you want in total)
 padding_length = 10  # Adjust this based on your largest number
 
 # Regex pattern to match the volume number at the end before the file extension
-pattern = re.compile(r'(eldvorp_md_2x2_trench_sketch_2_326746_376249_)(\d+)(\.tif)')
+pattern = re.compile(r'(eldvorp_md_2x2_trench_sketch_3_326699_378345_)(\d+)(\.tif)')
 
 # Get list of files in the directory
 files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
