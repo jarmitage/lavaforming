@@ -19,6 +19,9 @@ Usage:
     # Write markers to an audio file
     python logic_markers.py write --input_audio input.wav --csv_file markers.csv --output_audio output.wav
 
+    # Write markers to a silent audio file
+    python logic_markers.py create_from_csv --csv_file your_markers.csv --output_audio silent_with_markers.wav
+
     # Test the marker writing functionality
     python logic_markers.py test_write --source_audio source.wav --target_audio target.wav
 """
@@ -661,6 +664,75 @@ class LogicMarkerWriter(LogicMarkerBase):
 
         return adtl_content
 
+    def _create_silent_wav(self, output_path: str, duration_samples: int, 
+                             channels: int = 1, bit_depth: int = 16):
+        """
+        Creates a silent WAV file with the specified parameters.
+
+        Args:
+            output_path (str): Path to save the WAV file.
+            duration_samples (int): Duration of the silence in samples.
+            channels (int): Number of audio channels (default: 1 for mono).
+            bit_depth (int): Bit depth (default: 16).
+        """
+        if bit_depth not in [16, 24]: # Only handle common PCM bit depths for simplicity
+            raise ValueError("Unsupported bit depth. Only 16 or 24 bits are supported.")
+            
+        self.log(f"[LogicMarkerWriter._create_silent_wav] Creating silent WAV: {output_path}, duration: {duration_samples} samples, "
+                 f"rate: {self.sample_rate}, channels: {channels}, depth: {bit_depth}")
+
+        num_samples = duration_samples
+        bytes_per_sample = bit_depth // 8
+        byte_rate = self.sample_rate * channels * bytes_per_sample
+        block_align = channels * bytes_per_sample
+        fmt_chunk_size = 16 # Standard PCM fmt chunk size
+        data_size = num_samples * block_align
+        
+        # RIFF chunk size = 'WAVE' + size(fmt chunk) + size(data chunk)
+        # size(chunk) = 8 bytes header + chunk data size
+        riff_chunk_size = 4 + (8 + fmt_chunk_size) + (8 + data_size)
+
+        try:
+            with open(output_path, 'wb') as f:
+                # RIFF Header
+                f.write(b'RIFF')
+                f.write(struct.pack('<I', riff_chunk_size))
+                f.write(b'WAVE')
+                
+                # Format Chunk ('fmt ')
+                f.write(b'fmt ')
+                f.write(struct.pack('<I', fmt_chunk_size)) # Chunk size
+                f.write(struct.pack('<H', 1))              # Audio format (1 = PCM)
+                f.write(struct.pack('<H', channels))       # Number of channels
+                f.write(struct.pack('<I', self.sample_rate)) # Sample rate
+                f.write(struct.pack('<I', byte_rate))       # Byte rate
+                f.write(struct.pack('<H', block_align))    # Block align
+                f.write(struct.pack('<H', bit_depth))      # Bits per sample
+                
+                # Data Chunk ('data')
+                f.write(b'data')
+                f.write(struct.pack('<I', data_size))      # Data size
+                
+                # Write silence (zeros)
+                # Write in chunks to avoid large memory allocation for long durations
+                chunk_size = 1024 * 1024 # 1MB chunks
+                bytes_written = 0
+                while bytes_written < data_size:
+                    bytes_to_write = min(chunk_size, data_size - bytes_written)
+                    f.write(b'\x00' * bytes_to_write)
+                    bytes_written += bytes_to_write
+                    
+            self.log(f"[LogicMarkerWriter._create_silent_wav] Successfully created silent WAV: {output_path}")
+        except Exception as e:
+            self.log(f"[LogicMarkerWriter._create_silent_wav] Error creating silent WAV file: {e}")
+            # Clean up potentially incomplete file
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass # Ignore cleanup error
+            raise # Re-raise the original error
+
 # --- Marker Tester ---
 class LogicMarkerTester(LogicMarkerBase):
     """Class for testing marker reading and writing."""
@@ -999,11 +1071,187 @@ class LogicMarkerCLI:
         # Exit with status 0 on success, 1 on failure
         sys.exit(0 if success else 1)
 
+# --- Top-level CLI Functions ---
+
+def create_from_csv(csv_file: str, output_audio: str,
+                    channels: int = 1, bit_depth: int = 16, buffer_seconds: float = 1.0,
+                    verbose: bool = False):
+    """
+    Create a silent WAV file and write markers from a CSV file into it.
+    Calculates duration based on the last marker + buffer.
+
+    Args:
+        csv_file: Path to the CSV file containing markers (position/label or position_smpte/label).
+        output_audio: Path to save the output WAV file with silence and markers.
+        channels: Number of audio channels for the silent WAV (default: 1).
+        bit_depth: Bit depth for the silent WAV (default: 16).
+        buffer_seconds: Extra silence duration (in seconds) to add after the last marker (default: 1.0).
+        verbose: Enable detailed logging output.
+    """
+    writer = LogicMarkerWriter(verbose=verbose)
+    try:
+        # 1. Read markers from CSV
+        print(f"[create_from_csv] Reading markers from CSV: {csv_file}") # Updated log prefix
+        markers = writer.read_markers_from_csv(csv_file)
+        if not markers:
+            print(f"[create_from_csv] Error: No markers found in CSV file '{csv_file}'. Cannot create file.") # Updated log prefix
+            sys.exit(1)
+
+        # 2. Calculate required duration
+        max_position = 0
+        if markers: # Should always be true due to check above, but belts and suspenders
+            max_position = max(m.position for m in markers)
+
+        buffer_samples = int(buffer_seconds * writer.sample_rate)
+        duration_samples = max_position + buffer_samples
+        duration_seconds = duration_samples / writer.sample_rate
+        print(f"[create_from_csv] Last marker at sample {max_position}.") # Updated log prefix
+        print(f"[create_from_csv] Calculated required duration: {duration_samples} samples ({duration_seconds:.2f}s including {buffer_seconds}s buffer).") # Updated log prefix
+
+        # 3. Create silent WAV file
+        print(f"[create_from_csv] Creating silent WAV file: {output_audio}") # Updated log prefix
+        writer._create_silent_wav(output_audio, duration_samples, channels, bit_depth)
+
+        # 4. Write markers to the silent file (in-place rewrite)
+        print(f"[create_from_csv] Writing {len(markers)} markers to {output_audio}") # Updated log prefix
+        # Use the output path as both input and output for the writer function
+        writer.write_markers_to_file(input_audio_path=output_audio, output_audio_path=output_audio, markers=markers)
+
+        print(f"\n[create_from_csv] Successfully created {output_audio} with {len(markers)} markers.") # Updated log prefix
+
+    except FileNotFoundError as e:
+        print(f"[create_from_csv] Error: File not found - {e}") # Updated log prefix
+        sys.exit(1)
+    except (ValueError, TypeError, csv.Error) as e:
+         print(f"[create_from_csv] Error: Invalid file format or data - {e}") # Updated log prefix
+         # Clean up potentially created but incomplete output file
+         if os.path.exists(output_audio):
+             try: os.remove(output_audio)
+             except OSError: pass
+         sys.exit(1)
+    except Exception as e:
+        print(f"[create_from_csv] An unexpected error occurred: {type(e).__name__} - {e}") # Updated log prefix
+        # Clean up potentially created but incomplete output file
+        if os.path.exists(output_audio):
+             try: os.remove(output_audio)
+             except OSError: pass
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+def convert_marker_format(input_csv: str, output_csv: str, target_format: str,
+                          sample_rate: int = DEFAULT_SAMPLE_RATE, fps: int = DEFAULT_SMPTE_FPS, subframes: int = DEFAULT_SMPTE_SUBFRAMES_PER_FRAME,
+                          verbose: bool = False):
+    """
+    Convert a marker CSV file between sample position and SMPTE timecode formats.
+
+    Args:
+        input_csv: Path to the input CSV file containing markers.
+        output_csv: Path to save the converted CSV file.
+        target_format: The desired output format ('smpte' or 'samples').
+        sample_rate: Sample rate to use for conversion (default: 48000).
+        fps: Frames per second for SMPTE conversion (default: 30).
+        subframes: Subframes per frame for SMPTE conversion (default: 100).
+        verbose: Enable detailed logging output.
+    """
+    if verbose: print("[convert_marker_format] Function not implemented yet.")
+    raise NotImplementedError("Converting marker formats is not yet implemented.")
+
+def offset_markers(input_csv: str, output_csv: str, offset: str, offset_unit: str,
+                   sample_rate: int = DEFAULT_SAMPLE_RATE, fps: int = DEFAULT_SMPTE_FPS, subframes: int = DEFAULT_SMPTE_SUBFRAMES_PER_FRAME,
+                   verbose: bool = False):
+    """
+    Shift the time position of all markers in a CSV file by a specified offset.
+
+    Args:
+        input_csv: Path to the input CSV file containing markers.
+        output_csv: Path to save the CSV file with offset markers.
+        offset: The offset amount (e.g., "+1000", "-0:0:1:15.0", "5.5"). Needs sign.
+        offset_unit: The unit of the offset ('samples', 'smpte', or 'seconds').
+        sample_rate: Sample rate if converting offset or positions (default: 48000).
+        fps: Frames per second if using SMPTE (default: 30).
+        subframes: Subframes per frame if using SMPTE (default: 100).
+        verbose: Enable detailed logging output.
+    """
+    if verbose: print("[offset_markers] Function not implemented yet.")
+    raise NotImplementedError("Offsetting markers is not yet implemented.")
+
+def remove_markers(input_audio: str, output_audio: str, verbose: bool = False):
+    """
+    Create a copy of a WAV file with all marker information removed.
+
+    Args:
+        input_audio: Path to the source WAV file.
+        output_audio: Path to save the WAV file without markers.
+        verbose: Enable detailed logging output.
+    """
+    writer = LogicMarkerWriter(verbose=verbose) # Need writer for file copy/rewrite logic
+    try:
+        # We can leverage the existing write mechanism with an empty list
+        print(f"[remove_markers] Removing markers from {input_audio} to create {output_audio}")
+        writer.write_markers_to_file(input_audio, output_audio, [])
+        print(f"[remove_markers] Successfully created {output_audio} without markers.")
+    except FileNotFoundError as e:
+        print(f"[remove_markers] Error: File not found - {e}")
+        sys.exit(1)
+    except (ValueError, TypeError) as e:
+         print(f"[remove_markers] Error: Invalid file format or data - {e}")
+         sys.exit(1)
+    except Exception as e:
+        print(f"[remove_markers] An unexpected error occurred: {type(e).__name__} - {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+def validate_markers(file_path: str, verbose: bool = False):
+    """
+    Validate marker information in a WAV file or format of a CSV file.
+
+    Args:
+        file_path: Path to the WAV or CSV file to validate.
+        verbose: Enable detailed logging output.
+    """
+    if verbose: print("[validate_markers] Function not implemented yet.")
+    raise NotImplementedError("Validating marker files is not yet implemented.")
+
+def stretch_markers(input_csv: str, output_csv: str, factor: float, anchor_time: str = "0", anchor_unit: str = 'samples',
+                    sample_rate: int = DEFAULT_SAMPLE_RATE, fps: int = DEFAULT_SMPTE_FPS, subframes: int = DEFAULT_SMPTE_SUBFRAMES_PER_FRAME,
+                    verbose: bool = False):
+    """
+    Stretch or compress marker positions relative to an anchor time by a given factor.
+
+    Args:
+        input_csv: Path to the input CSV file containing markers.
+        output_csv: Path to save the CSV file with stretched markers.
+        factor: The stretch factor (e.g., 2.0 for double speed, 0.5 for half speed).
+        anchor_time: The time point around which stretching occurs (default: "0").
+        anchor_unit: The unit of the anchor time ('samples', 'smpte', or 'seconds', default: 'samples').
+        sample_rate: Sample rate for time conversions (default: 48000).
+        fps: Frames per second if using SMPTE (default: 30).
+        subframes: Subframes per frame if using SMPTE (default: 100).
+        verbose: Enable detailed logging output.
+    """
+    if verbose: print("[stretch_markers] Function not implemented yet.")
+    raise NotImplementedError("Stretching markers is not yet implemented.")
+
+# --- Main Execution ---
+
 def main():
     # Set default encoding to UTF-8 for robustness with labels?
     # Not usually necessary for modern Python 3, but consider if issues arise.
-    # sys.stdout.reconfigure(encoding='utf-8') 
-    fire.Fire(LogicMarkerCLI)
-    
+    # sys.stdout.reconfigure(encoding='utf-8')
+    # Expose the class methods and the top-level functions
+    fire.Fire({
+        'cli': LogicMarkerCLI,
+        'create_from_csv': create_from_csv,
+        'convert_marker_format': convert_marker_format,
+        'offset_markers': offset_markers,
+        'remove_markers': remove_markers,
+        'validate_markers': validate_markers,
+        'stretch_markers': stretch_markers
+    })
+
 if __name__ == '__main__':
     main()
