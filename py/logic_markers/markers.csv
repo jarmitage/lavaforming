@@ -1,6 +1,0 @@
-position_smpte,label
-00:00:00:00.00,Tempo: 120.0
-00:00:00:15.00,"Path to the CSV file\n containing markers (format: position,label)Path\n to the CSV file containing markers (format: position,label)"
-00:00:05:00.00,Marker 2
-00:00:07:15.00,Marker 3
-00:00:17:07.50,Marker 4
