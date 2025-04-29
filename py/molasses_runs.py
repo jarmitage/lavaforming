@@ -44,7 +44,7 @@ def create_output_directory(dem_file, events):
         str: The path to the created output directory.
     """
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_output_name = f"{dem_file}_{events.replace(',', '_')}"
+    base_output_name = f"{dem_file}_{events[0:13].replace(',', '_')}"
     output_dir = f"{timestamp}_{base_output_name}"
     os.makedirs(output_dir, exist_ok=True)
     print(f"Created output directory: {output_dir}")
@@ -154,6 +154,8 @@ def run_molasses_simulations(volume_range, output_dir, parents, elevation_uncert
         pd.DataFrame: DataFrame containing the results of the simulations.
     """
     results = []
+    # Determine the maximum volume from the input range for display purposes
+    max_vol_for_display = volume_range[-1] if len(volume_range) > 0 else 0 
     for total_volume in tqdm(volume_range, desc="Running Molasses simulations"):
         # Create configuration file for this volume in the output directory
         config_path = os.path.join(output_dir, "custom_molasses.conf")
@@ -172,11 +174,11 @@ def run_molasses_simulations(volume_range, output_dir, parents, elevation_uncert
             print(f"EVENTS_FILE = {events_file_path}", file=f)
         
         # Run the model
-        print(f"Running Molasses for volume: {total_volume}m^3 / {max_volume}m^3")
+        print(f"Running Molasses for volume: {total_volume}m^3 / {max_vol_for_display}m^3")
         subprocess.run(f"./molasses_2022 {config_path}", shell=True, stderr=subprocess.DEVNULL)
         
         # Process and save the output
-        dem_asc = f"{dem_file}_{events.replace(',', '_')}_{str(int(total_volume)).zfill(10)}"
+        dem_asc = f"{dem_file}_{events[0:13].replace(',', '_')}_{str(int(total_volume)).zfill(10)}"
         output_path = os.path.join(output_dir, dem_asc) # This is just the base name for conversion
         
         # Converts molasses data from CSV to raster and save as .asc file in the output directory
@@ -238,15 +240,30 @@ def main(
     residual: float = 1.0,
     min_volume: float = 1e4,
     max_volume: float = 1e9,
-    num_steps: int = 100,
+    num_steps: int = 200,
     pulse_volume: float = 1e1,
     parents: int = 1,
     elevation_uncert: float = 0.5,
-    volume_exponent: float = 2.0,
+    volume_exponent: float = 1.2,
     runs: int = 1
 ):
     """
     Runs the Molasses simulation workflow.
+
+    This script sets up and executes a series of MOLASSES simulations across a
+    range of total eruption volumes, processing the outputs into raster files.
+    It utilizes the `fire` library to expose command-line arguments for customization.
+
+    Key Steps:
+    1. Generates a non-linear range of total eruption volumes.
+    2. Creates a timestamped output directory for each run.
+    3. Creates an `events.in` file based on provided coordinates.
+    4. For each volume in the range:
+        a. Creates a `custom_molasses.conf` file with simulation parameters.
+        b. Executes the `molasses_2022` simulation.
+        c. Converts the raw output (`flow_-0`) to a raster file (.asc or .tif).
+    5. Saves a summary of results to `results.csv` in the output directory.
+    6. Zips the entire output directory.
 
     Args:
         dem_dir (str): Directory containing the DEM file.
@@ -265,21 +282,12 @@ def main(
     """
     # Construct full DEM path and base name without extension
     dem = f"{dem_dir}{dem_file_base}{dem_ext}"
-    dem_file = dem_file_base # Use the base name for output naming consistency
+    dem_file = dem_file_base
 
     # Validate DEM file existence
     if not os.path.exists(dem):
         print(f"Error: DEM file not found at {dem}")
         sys.exit(1)
-
-    print(f"Using DEM: {dem}")
-    print(f"Event location(s): {events}")
-    print(f"Residual thickness: {residual} m")
-    print(f"Volume range: {min_volume} to {max_volume} m³ in {num_steps} steps (exponent: {volume_exponent})")
-    print(f"Pulse volume: {pulse_volume} m³")
-    print(f"Parent cells: {parents}")
-    print(f"Elevation uncertainty: {elevation_uncert} m")
-    print(f"Runs per configuration: {runs}")
 
     volume_range = generate_nonlinear_volume_range(min_volume, max_volume, num_steps, volume_exponent)
     np.set_printoptions(suppress=True, precision=2, threshold=sys.maxsize)

@@ -73,7 +73,7 @@ def crop_images(
                 
                 # Save cropped image
                 cropped_img.save(output_path)
-                tqdm.write(f"Cropped: {img_path} -> {output_path}")
+                # tqdm.write(f"Cropped: {img_path} -> {output_path}")
                 
         except Exception as e:
             tqdm.write(f"Error processing {img_path}: {e}")

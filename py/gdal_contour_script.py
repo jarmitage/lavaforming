@@ -8,6 +8,7 @@ import numpy as np
 import rasterio
 from rasterio.plot import show
 from tqdm import tqdm
+import warnings
 
 def create_contours_with_gdal(dem_path, output_vector, interval=10, attribute_name='elevation'):
     """
@@ -84,6 +85,9 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
     Returns:
     fig, ax: The matplotlib figure and axis objects
     """
+    # Suppress specific overflow warning from matplotlib color normalization
+    warnings.filterwarnings("ignore", message="overflow encountered in multiply", category=RuntimeWarning, module="matplotlib.colors")
+    
     # Read the DEM
     with rasterio.open(dem_path) as src:
         dem = src.read(1)
@@ -104,6 +108,7 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
     
     # If lava data is provided, plot it as an overlay and zoom to its extent
     if lava_path:
+        # tqdm.write(f"\nProcessing lava file: {os.path.basename(lava_path)}")
         lava_data, lava_transform, lava_nodata = load_raster_file(lava_path)
         # Calculate the lava extent from its transform
         lava_extent = [
@@ -112,13 +117,42 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
             lava_transform[5] + lava_transform[4] * lava_data.shape[0],  # bottom
             lava_transform[5]   # top
         ]
-        # Mask nodata values
-        lava_masked = np.ma.masked_values(lava_data, lava_nodata)
+        # Mask nodata values if a nodata value is defined
+        if lava_nodata is not None:
+            lava_masked = np.ma.masked_values(lava_data, lava_nodata)
+        else:
+            # If no nodata value, we might still want a masked array for consistency
+            # but without masking any specific value initially.
+            lava_masked = np.ma.masked_array(lava_data)
+            
+        # Ensure data is float for subsequent numpy operations
+        lava_masked = lava_masked.astype(np.float32)
         # Normalize lava data to prevent overflow
-        if not np.all(lava_masked.mask):  # If we have any valid data
-            lava_valid = lava_masked.compressed()  # Get non-masked values
-            vmin, vmax = np.percentile(lava_valid, [2, 98])  # Robust min/max
-            lava_masked = np.clip(lava_masked, vmin, vmax)
+        if not np.all(lava_masked.mask):  # If we have any valid (non-masked) data
+            try:
+                lava_valid = lava_masked.compressed()  # Get non-masked values
+
+                # Filter out non-finite values (NaN, inf) before calculating percentiles
+                finite_lava_valid = lava_valid[np.isfinite(lava_valid)]
+
+                if finite_lava_valid.size > 0:
+                    vmin, vmax = np.percentile(finite_lava_valid, [2, 98])  # Robust min/max on finite data
+
+                    # Replace non-finite values in the original masked array with NaN 
+                    # This helps ensure they are treated transparently by imshow
+                    lava_masked[~np.isfinite(lava_masked)] = np.nan 
+
+                    # Clip only the finite values; NaN values will remain NaN
+                    lava_masked = np.clip(lava_masked, vmin, vmax)
+                else:
+                    # Set all to NaN if no finite data, ensures transparency
+                    lava_masked.fill(np.nan)
+
+            except Exception as norm_err:
+                tqdm.write(f"    ERROR during normalization: {str(norm_err)}")
+                # Decide how to handle error: re-raise, continue with unnormalized data, etc.
+                # For now, let's re-raise to see the specific error
+                raise norm_err
         # Plot lava with transparency where there is no lava
         lava_img = ax.imshow(lava_masked, extent=lava_extent, cmap='hot', alpha=0.7)
         # Add colorbar for lava - adjust position and size with fixed number of ticks
@@ -176,11 +210,84 @@ def plot_dem_with_contours(dem_path, contour_shapefile, lava_path=None, output_p
     
     return fig, ax
 
-def main(input_file: str, output_path: str | None = None, interval: int = 10, 
-         lava_file: str | None = None, lava_folder: str | None = None, lava_zoom: float = 1.0, 
-         vent: tuple | None = None, vent_zoom: float = 1.0, cmap: str = 'terrain', 
-         show_window: bool = True, show_elevation_bar: bool = False, show_thickness_bar: bool = False):
-    """Generate a contour map from a DEM file with optional lava flow overlay.
+def process_lava_folder(lava_folder: str,
+                         output_path: str | None,
+                         input_file: str,
+                         contour_file: str,
+                         interval: int,
+                         lava_zoom: float,
+                         vent_coords: tuple | None,
+                         vent_zoom: float,
+                         cmap: str,
+                         show_window: bool,
+                         show_elevation_bar: bool,
+                         show_thickness_bar: bool):
+    """Processes all raster files in a specified folder, generating plots."""
+    # Process all ASC and TIF files in the lava folder
+    tqdm.write(f"Scanning folder: {lava_folder}")
+    lava_files = [f for f in os.listdir(lava_folder) if f.lower().endswith(('.asc', '.tif', '.tiff'))]
+    tqdm.write(f"Found {len(lava_files)} raster files\n")
+    
+    # Add progress bar
+    for lava_filename in tqdm(lava_files, desc="Processing lava files"):
+        try:
+            lava_path = os.path.join(lava_folder, lava_filename)
+            
+            # Generate output filename: output_path is directory, lava_filename provides base name
+            current_output = None
+            if output_path: # output_path is the directory to save images in
+                lava_base_name = os.path.splitext(lava_filename)[0]
+                output_filename = f"{lava_base_name}.png" # Always save as PNG
+                current_output = os.path.join(output_path, output_filename)
+            
+            # Close any existing figures to prevent memory issues
+            plt.close('all')
+            
+            plot_dem_with_contours(
+                input_file,
+                contour_file,
+                lava_path=lava_path,
+                output_path=current_output,
+                figsize=(12, 10),
+                interval=interval,
+                lava_zoom=lava_zoom,
+                vent=vent_coords,
+                vent_zoom=vent_zoom,
+                cmap=cmap,
+                show_window=show_window,
+                show_elevation_bar=show_elevation_bar,
+                show_thickness_bar=show_thickness_bar
+            )
+            # if current_output:
+            #     tqdm.write(f"Saved: {os.path.basename(current_output)}")
+        except Exception as e:
+            tqdm.write(f"\nError processing {lava_filename}: {str(e)}")
+            continue
+
+def main(input_file: str,
+         output_path: str | None = None,
+         interval: int = 10,
+         lava_file: str | None = None,
+         lava_folder: str | None = None,
+         lava_zoom: float = 1.0,
+         vent: tuple | None = None,
+         vent_zoom: float = 1.5,
+         cmap: str = 'bone',
+         show_window: bool = False,
+         show_elevation_bar: bool = False,
+         show_thickness_bar: bool = False):
+    """Generate a contour map from a DEM file, optionally overlaying lava flow data.
+
+    This script performs the following steps:
+    1. Parses the vent coordinates if provided.
+    2. Creates the output directory if it doesn't exist.
+    3. Determines the directory for saving the contour shapefile (based on output_path or current dir).
+    4. Calls `create_contours_with_gdal` to generate a contour shapefile from the input DEM.
+    5. If a `lava_folder` is specified:
+        - Calls `process_lava_folder` to handle processing and plotting for each lava file.
+    6. If a single `lava_file` is specified:
+        - Calls `plot_dem_with_contours` once to create and save (if `output_path` provided) the map with the DEM, contours, and the single lava flow overlay.
+    7. If neither `lava_folder` nor `lava_file` is specified, it currently doesn't generate a plot (though the contours are generated).
     
     Args:
         input_file: Path to input DEM file
@@ -190,9 +297,9 @@ def main(input_file: str, output_path: str | None = None, interval: int = 10,
         lava_folder: Path to folder containing multiple lava flow ASC files (optional)
         lava_zoom: Zoom level for the lava extent
         vent: Vent location as (x,y) coordinates tuple
-        vent_zoom: Zoom level for the vent-centered view (default=1.0, higher values = more zoom)
+        vent_zoom: Zoom level for the vent-centered view (default=1.5, higher values = more zoom)
         cmap: Matplotlib colormap name for DEM visualization (default: 'terrain')
-        show_window: Whether to display the plot window (default: True)
+        show_window: Whether to display the plot window (default: False)
         show_elevation_bar: Whether to show the elevation colorbar (default: False)
         show_thickness_bar: Whether to show the lava thickness colorbar (default: False)
     """
@@ -226,47 +333,20 @@ def main(input_file: str, output_path: str | None = None, interval: int = 10,
         return
 
     if lava_folder:
-        # Process all ASC and TIF files in the lava folder
-        tqdm.write(f"Scanning folder: {lava_folder}")
-        lava_files = [f for f in os.listdir(lava_folder) if f.lower().endswith(('.asc', '.tif', '.tiff'))]
-        tqdm.write(f"Found {len(lava_files)} raster files\n")
-        
-        # Add progress bar
-        for lava_filename in tqdm(lava_files, desc="Processing lava files"):
-            try:
-                lava_path = os.path.join(lava_folder, lava_filename)
-                
-                # Generate output filename based on the lava filename
-                if output_path:
-                    base_name = os.path.splitext(output_path)[0]
-                    ext = os.path.splitext(output_path)[1]
-                    current_output = f"{base_name}_{os.path.splitext(lava_filename)[0]}{ext}"
-                else:
-                    current_output = None
-                
-                # Close any existing figures to prevent memory issues
-                plt.close('all')
-                
-                plot_dem_with_contours(
-                    input_file,
-                    contour_file,
-                    lava_path=lava_path,
-                    output_path=current_output,
-                    figsize=(12, 10),
-                    interval=interval,
-                    lava_zoom=lava_zoom,
-                    vent=vent_coords,
-                    vent_zoom=vent_zoom,
-                    cmap=cmap,
-                    show_window=show_window,
-                    show_elevation_bar=show_elevation_bar,
-                    show_thickness_bar=show_thickness_bar
-                )
-                if current_output:
-                    tqdm.write(f"Saved: {os.path.basename(current_output)}")
-            except Exception as e:
-                tqdm.write(f"\nError processing {lava_filename}: {str(e)}")
-                continue
+        process_lava_folder(
+            lava_folder=lava_folder,
+            output_path=output_path,
+            input_file=input_file,
+            contour_file=contour_file,
+            interval=interval,
+            lava_zoom=lava_zoom,
+            vent_coords=vent_coords,
+            vent_zoom=vent_zoom,
+            cmap=cmap,
+            show_window=show_window,
+            show_elevation_bar=show_elevation_bar,
+            show_thickness_bar=show_thickness_bar
+        )
     elif lava_file:
         # Process single lava file as before
         plot_dem_with_contours(
