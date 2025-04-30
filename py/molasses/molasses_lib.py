@@ -19,20 +19,21 @@ import matplotlib.pyplot as plt
 import threading
 import geopandas as gpd
 from geocube.api.core import make_geocube
-sys.path.insert(0, "/home/jovyan/shared/Libraries/")
-import victor
+from typing import Optional, List, Dict, Tuple, Any, Union
+# sys.path.insert(0, "/home/jovyan/shared/Libraries/")
+# import victor
 
 MODE_INITIAL = [1e4, 1e5, 2.5e5, 5e5, 7.5e5, 1e6]
 MODE_PRIMARY = [5e5, 1e6, 2.5e6]
 MODE_PRODUCTION = [5e6, 1e7, 2.5e7]
 MODE_EXTENDED = [5e7, 1e8, 5e8]
 
-def setup_environment():
+def setup_environment() -> None:
     """Configure environment and suppress warnings."""
     warnings.filterwarnings("ignore")
     print("[setup_environment] Environment configured.")
 
-def load_simulation_matrix(matrix_file):
+def load_simulation_matrix(matrix_file: str) -> Optional[pd.DataFrame]:
     """
     Loads a simulation matrix from a CSV file defining DEM-Event pairs to test.
     
@@ -64,7 +65,7 @@ def load_simulation_matrix(matrix_file):
         print(f"[load_simulation_matrix] Error loading simulation matrix: {e}")
         return None
 
-def parse_coordinates(events):
+def parse_coordinates(events: str) -> np.ndarray:
     """
     Parses the event coordinates string into a numpy array.
 
@@ -85,7 +86,7 @@ def parse_coordinates(events):
         coordinates = np.array([]) # Assign empty array if parsing fails
     return coordinates
 
-def create_output_directory(dem_file, events):
+def create_output_directory(dem_file: str, events: str) -> str:
     """
     Creates timestamped output directory for simulation results.
     
@@ -103,7 +104,7 @@ def create_output_directory(dem_file, events):
     print(f"[create_output_directory] Created output directory: {output_dir}")
     return output_dir
 
-def create_events_file(events, events_file_path):
+def create_events_file(events: str, events_file_path: str) -> Optional[str]:
     """
     Creates events.in file with vent coordinates at the specified path.
     
@@ -123,8 +124,17 @@ def create_events_file(events, events_file_path):
         tqdm.write(f"[create_events_file] Error creating events file {events_file_path}: {e}")
         return None
 
-def create_config_file(config_path, parents, elevation_uncert, residual, 
-                      total_volume, pulse_volume, runs, dem_abs_path, events_abs_path):
+def create_config_file(
+    config_path: str,
+    parents: int,
+    elevation_uncert: float,
+    residual: float,
+    total_volume: float,
+    pulse_volume: float,
+    runs: int,
+    dem_abs_path: str,
+    events_abs_path: str
+) -> Optional[str]:
     """
     Creates MOLASSES configuration file for a simulation at the specified path.
     Ensures DEM_FILE and EVENTS_FILE use absolute paths.
@@ -216,7 +226,7 @@ def run_molasses(config_path: str, run_dir: str) -> tuple[bool, float]:
         tqdm.write(f"[run_molasses]   Stderr: {result.stderr.strip()}")
         return False, elapsed_time
 
-def convert_molasses(input_flow_file: str, output_raster_path: str, resolution: int = 2):
+def convert_molasses(input_flow_file: str, output_raster_path: str, resolution: int = 2) -> Optional[str]:
     """
     Converts molasses data from a CSV file ('flow_-0') to a raster format.
 
@@ -277,9 +287,20 @@ def convert_molasses(input_flow_file: str, output_raster_path: str, resolution: 
         tqdm.write(f"[convert_molasses] Error writing raster file: {e}")
         return None
 
-def run_volume_simulation(volume, output_dir, dem_file, events, 
-                         parents, elevation_uncert, residual, pulse_volume, 
-                         runs, dem, events_file_path, resolution):
+def run_volume_simulation(
+    volume: float,
+    output_dir: str,
+    dem_file: str,
+    events: str,
+    parents: int,
+    elevation_uncert: float,
+    residual: float,
+    pulse_volume: float,
+    runs: int,
+    dem: str,
+    events_file_path: str,
+    resolution: int
+) -> Dict[str, Any]:
     """
     Runs a single MOLASSES simulation for a specific volume.
     
@@ -354,7 +375,7 @@ def run_volume_simulation(volume, output_dir, dem_file, events,
         'elapsed_time': elapsed_time
     }
 
-def save_results(results, output_dir):
+def save_results(results: List[Dict[str, Any]], output_dir: str) -> str:
     """
     Saves simulation results to CSV file.
     
@@ -371,7 +392,7 @@ def save_results(results, output_dir):
     print(f"[save_results] Saved results to {results_path}")
     return results_path
 
-def archive_outputs(output_dir):
+def archive_outputs(output_dir: str) -> Optional[str]:
     """
     Archives output directory to ZIP file.
     
@@ -395,7 +416,7 @@ def archive_outputs(output_dir):
         print(f"[archive_outputs] Failed to create archive: {e}")
         return None
 
-def determine_volume_list(volumes: str | None, mode: str | None) -> list[float]:
+def determine_volume_list(volumes: Optional[str], mode: Optional[str]) -> List[float]:
     """
     Determines the list of volumes to simulate based on input parameters.
 
@@ -439,7 +460,7 @@ def determine_volume_list(volumes: str | None, mode: str | None) -> list[float]:
     return volume_list
 
 def run_simulations(
-    volume_list: list[float],
+    volume_list: List[float],
     output_dir: str,
     dem_file: str,
     events: str,
@@ -453,7 +474,7 @@ def run_simulations(
     resolution: int,
     coordinates: np.ndarray,
     plot: bool
-):
+) -> List[Dict[str, Any]]:
     """
     Runs the simulation loop for all volumes, saves results, and archives outputs.
 
@@ -511,7 +532,14 @@ def run_simulations(
     print(f"\n[run_simulations] All simulations completed!\n{results.to_markdown()}")
     return results
     
-def plot_and_save_flow(dem, output_raster_path, coordinates, volume, plot_filename, elapsed_time):
+def plot_and_save_flow(
+    dem: str,
+    output_raster_path: str,
+    coordinates: np.ndarray,
+    volume: float,
+    plot_filename: str,
+    elapsed_time: float
+) -> None:
     """
     Generates and saves a plot for a single simulation result to a specific file.
 
@@ -549,7 +577,12 @@ def plot_and_save_flow(dem, output_raster_path, coordinates, volume, plot_filena
         if 'fig' in locals() and plt.fignum_exists(fig.number):
              plt.close(fig)
 
-def create_comparison_grid(results_list, matrix_df, volume_list, output_dir):
+def create_comparison_grid(
+    results_list: List[List[Dict[str, Any]]], # Expects list of lists
+    matrix_df: pd.DataFrame,
+    volume_list: List[float],
+    output_dir: str
+) -> str:
     """
     Creates a visual comparison grid similar to the screenshot.
     
@@ -653,7 +686,14 @@ def create_comparison_grid(results_list, matrix_df, volume_list, output_dir):
     print(f"[create_comparison_grid] Saved comparison grid to {comparison_path}")
     return comparison_path
 
-def setup_simulation(dem_dir, dem_file, dem_ext, events, volumes, mode):
+def setup_simulation(
+    dem_dir: str,
+    dem_file: str,
+    dem_ext: str,
+    events: str,
+    volumes: Optional[str],
+    mode: Optional[str]
+) -> Optional[Tuple[str, List[float], str, str, np.ndarray]]:
     """
     Sets up the simulation environment and parameters.
 
@@ -687,7 +727,12 @@ def setup_simulation(dem_dir, dem_file, dem_ext, events, volumes, mode):
 
     return dem, volume_list, output_dir, events_file_path, coordinates
 
-def run_multi_simulation(matrix_df, volume_list, dem_dir, **kwargs):
+def run_multi_simulation(
+    matrix_df: pd.DataFrame,
+    volume_list: List[float],
+    dem_dir: str,
+    **kwargs: Any
+) -> Tuple[str, List[List[Dict[str, Any]]]]:
     """
     Runs simulations for all DEM-Event pairs across all volumes,
     organizing outputs into volume-specific subdirectories within a master directory.
@@ -882,7 +927,7 @@ def run_multi_simulation(matrix_df, volume_list, dem_dir, **kwargs):
     tqdm.write(f"[run_multi_simulation] Multi-simulation process complete. Master output: {master_output_dir}")
     return master_output_dir, results_list
 
-def process_results(results, output_dir) -> bool:
+def process_results(results: List[Dict[str, Any]], output_dir: str) -> bool:
     """
     Saves simulation results and archives the output directory.
 
@@ -898,7 +943,7 @@ def process_results(results, output_dir) -> bool:
         print(f"[process_results] Error processing results: {e}")
         return False
 
-def create_summary_table(results_list, output_dir):
+def create_summary_table(results_list: List[List[Dict[str, Any]]], output_dir: str) -> str:
     """
     Creates a summary table from all simulation results.
     
@@ -939,3 +984,65 @@ def create_summary_table(results_list, output_dir):
     print(f"[create_summary_table] Saved statistics to {stats_path}")
     
     return summary_path
+
+def generate_logarithmic_samples(
+    min_volume: Optional[float] = None,
+    max_volume: Optional[float] = None,
+    num_samples: Optional[int] = None
+) -> np.ndarray:
+    """
+    Generates a specific, non-uniform sequence of 40 lava flow volumes.
+    
+    This sequence is designed with specific steps relevant to flow behavior analysis:
+    - 5k to 20k: step 2.5k
+    - 25k to 50k: step 5k
+    - 60k to 100k: step 10k
+    - 120k to 200k: step 20k
+    - 225k to 300k: step 25k
+    - 350k to 900k: step 50k
+    - Includes 1M
+    
+    Ignores min_volume, max_volume, and num_samples parameters.
+
+    Returns:
+    --------
+    numpy.ndarray
+        Array of 40 specific volumes in cubic meters (dtype=float).
+    """
+    # Define segments with varying steps
+    volumes_part1 = np.arange(5000, 20000 + 2500, 2500)
+    volumes_part2 = np.arange(25000, 50000 + 5000, 5000)
+    volumes_part3 = np.arange(60000, 100000 + 10000, 10000)
+    volumes_part4 = np.arange(120000, 200000 + 20000, 20000)
+    volumes_part5 = np.arange(225000, 300000 + 25000, 25000)
+    volumes_part6 = np.arange(350000, 900000 + 50000, 50000)
+    volumes_part7 = np.array([1000000])
+    
+    # Concatenate all parts
+    volumes = np.concatenate([
+        volumes_part1, volumes_part2, volumes_part3, volumes_part4, 
+        volumes_part5, volumes_part6, volumes_part7
+    ]).astype(float)
+    
+    # Verify the length (should be 40)
+    if len(volumes) != 40:
+        print(f"[generate_logarithmic_samples] Warning: Generated {len(volumes)} volumes, expected 40. Check logic.")
+
+    return volumes
+
+def estimate_runtime(volumes: np.ndarray, k: float = 0.0036, alpha: float = 1.3) -> None:
+    times_seconds = k * (volumes ** alpha)
+    times_minutes = times_seconds / 60
+    
+    cumulative_minutes = np.cumsum(times_minutes)
+    
+    print("\nEstimated run times:")
+    print(f"Total time: {cumulative_minutes[-1]:.2f} minutes ({cumulative_minutes[-1]/60:.2f} hours)")
+    
+    # Print table header
+    print("\n{:<3} {:<10} {:<15} {:<20}".format("#", "Volume (m³)", "Est. Time (min)", "Cumulative Time (min)"))
+    print("-" * 50)
+    
+    # Print each row
+    for i, (vol, time, cum_time) in enumerate(zip(volumes, times_minutes, cumulative_minutes), 1):
+        print("{:<3} {:<10.0f} {:<15.2f} {:<20.2f}".format(i, vol, time, cum_time))
