@@ -14,6 +14,7 @@ import sys
 import datetime
 import shutil
 import time
+import re # Added for parsing volume directories
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import threading
@@ -762,33 +763,110 @@ def setup_simulation(
     return dem, volume_list, output_dir, events_file_path, coordinates
 
 def run_multi_simulation(
-    matrix_df: pd.DataFrame,
-    volume_list: List[float],
+    matrix_df: Optional[pd.DataFrame], # Made optional for resume mode
+    volume_list: Optional[List[float]], # Made optional for resume mode
     dem_dir: str,
+    resume_dir: Optional[str] = None,
     **kwargs: Any
-) -> Tuple[str, List[List[Dict[str, Any]]]]:
+) -> Tuple[Optional[str], Optional[List[List[Dict[str, Any]]]]]: # Return optional in case of resume failure
     """
     Runs simulations for all DEM-Event pairs across all volumes,
     organizing outputs into volume-specific subdirectories within a master directory.
+    Can resume a previous run if resume_dir is provided.
     
     Args:
-        matrix_df (pd.DataFrame): The simulation matrix dataframe
-        volume_list (list): List of volumes to simulate
-        dem_dir (str): Directory containing DEM files
+        matrix_df (pd.DataFrame | None): The simulation matrix dataframe. Required if not resuming.
+        volume_list (list | None): List of volumes to simulate. Required if not resuming.
+        dem_dir (str): Directory containing DEM files.
+        resume_dir (str | None): Path to a previous multi-simulation output directory to resume.
         **kwargs: Additional parameters for simulation (parents, elevation_uncert, 
                   residual, pulse_volume, runs, resolution, plot)
         
     Returns:
-        tuple: (master_output_dir, results_list)
+        tuple: (master_output_dir, results_list) or (None, None) if resume setup fails.
     """
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    master_output_dir = f"{timestamp}_multi_simulation"
-    os.makedirs(master_output_dir, exist_ok=True)
-    tqdm.write(f"[run_multi_simulation] Created master output directory: {master_output_dir}")
     
-    # Save the matrix for reference
-    matrix_df.to_csv(os.path.join(master_output_dir, "simulation_matrix.csv"), index=False)
-    tqdm.write(f"[run_multi_simulation] Saved simulation matrix to master directory.")
+    # --- Setup: Determine if resuming or starting new ---
+    if resume_dir:
+        tqdm.write(f"[run_multi_simulation] Attempting to resume from: {resume_dir}")
+        if not os.path.isdir(resume_dir):
+            tqdm.write(f"[run_multi_simulation] Error: Resume directory not found: {resume_dir}")
+            return None, None
+        master_output_dir = resume_dir
+        
+        # Load matrix from resume_dir
+        matrix_path = os.path.join(master_output_dir, "simulation_matrix.csv")
+        if not os.path.exists(matrix_path):
+            tqdm.write(f"[run_multi_simulation] Error: simulation_matrix.csv not found in {master_output_dir}")
+            return None, None
+        try:
+            matrix_df = pd.read_csv(matrix_path)
+            tqdm.write(f"[run_multi_simulation] Loaded simulation matrix from {matrix_path}")
+        except Exception as e:
+            tqdm.write(f"[run_multi_simulation] Error loading matrix file {matrix_path}: {e}")
+            return None, None
+            
+        # Determine volume list from existing directories
+        volume_list = []
+        volume_pattern = re.compile(r"^volume_(\d+\.\d+e[\+\-]\d+)$")
+        try:
+             for item in os.listdir(master_output_dir):
+                 if os.path.isdir(os.path.join(master_output_dir, item)):
+                     match = volume_pattern.match(item)
+                     if match:
+                         volume_list.append(float(match.group(1)))
+             volume_list.sort() # Ensure consistent order
+             if not volume_list:
+                 tqdm.write(f"[run_multi_simulation] Warning: No volume subdirectories found in {master_output_dir}. Cannot determine volumes to resume.")
+                 # Decide: Default to a standard list, or fail? Let's fail for now.
+                 return None, None
+             tqdm.write(f"[run_multi_simulation] Determined volumes to resume: {volume_list}")
+        except Exception as e:
+             tqdm.write(f"[run_multi_simulation] Error scanning for volume directories in {master_output_dir}: {e}")
+             return None, None
+             
+        # Load previous results
+        previous_results = {}
+        for volume in volume_list:
+            vol_dir = os.path.join(master_output_dir, f"volume_{volume:.2e}")
+            results_csv = os.path.join(vol_dir, "results.csv")
+            if os.path.exists(results_csv):
+                try:
+                    vol_df = pd.read_csv(results_csv)
+                    # Convert dataframe rows to dicts for easier lookup
+                    for _, row in vol_df.iterrows():
+                         # Use (volume, trench_id, dem_file, events) as a unique key for robustness
+                         key = (float(row['volume']), row['trench_id'], row['dem_file'], row['events'])
+                         # Store the dictionary, ensuring 'success' is boolean
+                         result_dict = row.to_dict()
+                         result_dict['success'] = bool(row['success'])
+                         previous_results[key] = result_dict
+                    tqdm.write(f"[run_multi_simulation] Loaded {len(vol_df)} previous results for volume {volume:.2e}")
+                except Exception as e:
+                    tqdm.write(f"[run_multi_simulation] Warning: Could not load or parse {results_csv}: {e}. Will re-run simulations for this volume.")
+        tqdm.write(f"[run_multi_simulation] Total previous results loaded: {len(previous_results)}")
+
+    else:
+        # New run setup
+        if matrix_df is None or volume_list is None:
+             tqdm.write("[run_multi_simulation] Error: matrix_df and volume_list must be provided for a new run.")
+             return None, None
+             
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        master_output_dir = f"{timestamp}_multi_simulation"
+        os.makedirs(master_output_dir, exist_ok=True)
+        tqdm.write(f"[run_multi_simulation] Created master output directory: {master_output_dir}")
+        
+        # Save the matrix for reference
+        matrix_path = os.path.join(master_output_dir, "simulation_matrix.csv")
+        try:
+             matrix_df.to_csv(matrix_path, index=False)
+             tqdm.write(f"[run_multi_simulation] Saved simulation matrix to {matrix_path}")
+        except Exception as e:
+             tqdm.write(f"[run_multi_simulation] Error saving matrix file {matrix_path}: {e}")
+             # Continue? Or fail? Let's continue but log warning.
+
+        previous_results = {} # No previous results for a new run
     
     # Get simulation parameters from kwargs or use defaults
     parents = kwargs.get('parents', 1)
@@ -799,23 +877,43 @@ def run_multi_simulation(
     resolution = kwargs.get('resolution', 2)
     plot_flag = kwargs.get('plot', True)
 
-    results_list = []
-    
+    results_list = [] # This will store results lists *per volume*
+    all_results_flat = list(previous_results.values()) # Keep a flat list for final summary
+
     # --- Loop 1: Volumes ---
-    for volume in tqdm(volume_list, desc="Simulating volumes"): 
-        # Create volume-specific output directory inside master
+    for volume in tqdm(volume_list, desc="Processing volumes"): 
         volume_output_dir = os.path.join(master_output_dir, f"volume_{volume:.2e}")
         os.makedirs(volume_output_dir, exist_ok=True)
-        tqdm.write(f"[run_multi_simulation] Created/Ensured volume directory: {volume_output_dir}")
+        # For resume mode, this directory should already exist, but exist_ok=True handles it.
+        tqdm.write(f"[run_multi_simulation] Processing volume directory: {volume_output_dir}")
         
-        volume_results = []
+        volume_results = [] # Results specifically for THIS volume loop execution
         
         # --- Loop 2: DEM-Event pairs within the current volume ---
         for idx, row in tqdm(matrix_df.iterrows(), desc=f"Volume {volume:.2e} m³", total=len(matrix_df), leave=False):
             dem_file_base = row['dem_file']
-            dem_ext = row['dem_ext']
+            dem_ext = row.get('dem_ext', '.asc') # Handle potential missing column
             events = row['events']
             trench_id = row['trench_id']
+
+            # Create unique key for checking previous results
+            run_key = (float(volume), trench_id, dem_file_base, events)
+
+            # --- Check if already completed --- 
+            if run_key in previous_results:
+                 prev_result = previous_results[run_key]
+                 # Check specifically for success (simulation AND conversion) 
+                 # Also check if output file physically exists if plot is needed
+                 output_file_exists = prev_result.get('output_file') and os.path.exists(str(prev_result['output_file']))
+                 plot_file_exists = not plot_flag or (prev_result.get('plot_file') and os.path.exists(str(prev_result['plot_file'])))
+                 
+                 if prev_result.get('success') and output_file_exists and plot_file_exists:
+                     tqdm.write(f"[run_multi_simulation] Skipping completed run: Vol={volume:.2e}, Trench={trench_id}, DEM={dem_file_base}")
+                     volume_results.append(prev_result) # Add existing result to this volume's list
+                     continue # Skip to next DEM/Event pair
+                 else:
+                      tqdm.write(f"[run_multi_simulation] Re-running failed/incomplete run: Vol={volume:.2e}, Trench={trench_id}, DEM={dem_file_base} (Success: {prev_result.get('success')}, Output Exists: {output_file_exists}, Plot Exists: {plot_file_exists})")
+                      # Don't append here, let the simulation run and append the *new* result later
 
             # --- Setup for this specific DEM/Event/Volume run --- 
             tqdm.write(f"[run_multi_simulation] Setting up: Vol={volume:.2e}, DEM={dem_file_base}, Trench={trench_id}")
@@ -829,6 +927,9 @@ def run_multi_simulation(
                     'volume': volume,
                     'success': False,
                     'output_file': None,
+                    'plot_file': None,
+                    'config_file': None,
+                    'events_file': None,
                     'elapsed_time': 0.0,
                     'trench_id': trench_id,
                     'dem_file': dem_file_base,
@@ -836,6 +937,12 @@ def run_multi_simulation(
                     'error': 'DEM not found'
                 }
                 volume_results.append(result)
+                # Add to flat list ONLY IF it wasn't already there as a failed run
+                if run_key not in previous_results:
+                     all_results_flat.append(result)
+                else: # Update the existing entry in the flat list
+                    existing_index = next((i for i, item in enumerate(all_results_flat) if (item['volume'], item['trench_id'], item['dem_file'], item['events']) == run_key), -1)
+                    if existing_index != -1: all_results_flat[existing_index] = result
                 continue # Skip to next DEM/Event pair
             
             # 2. Parse coordinates
@@ -846,6 +953,9 @@ def run_multi_simulation(
                     'volume': volume,
                     'success': False,
                     'output_file': None,
+                    'plot_file': None,
+                    'config_file': None,
+                    'events_file': None,
                     'elapsed_time': 0.0,
                     'trench_id': trench_id,
                     'dem_file': dem_file_base,
@@ -853,25 +963,47 @@ def run_multi_simulation(
                     'error': 'Coordinate parsing failed'
                  }
                  volume_results.append(result)
+                 if run_key not in previous_results: all_results_flat.append(result)
+                 else: # Update the existing entry in the flat list
+                     existing_index = next((i for i, item in enumerate(all_results_flat) if (item['volume'], item['trench_id'], item['dem_file'], item['events']) == run_key), -1)
+                     if existing_index != -1: all_results_flat[existing_index] = result
                  continue
                  
             # 3. Define output filenames within the volume_output_dir
             events_short = events[0:13].replace(',', '_') # Short identifier for filenames
             volume_str = str(int(volume)).zfill(10) # Padded volume string
-            base_output_name = f"{dem_file_base}_{events_short}_{volume_str}" # Base for .tif, .png etc.
+            # Ensure base name includes trench_id for uniqueness across different events/dems with same coords maybe?
+            # Let's add trench_id to the base name for clarity and safety.
+            base_output_name = f"trench_{trench_id}_{dem_file_base}_{events_short}_{volume_str}" 
             
             events_file_path = os.path.abspath(os.path.join(volume_output_dir, f"{base_output_name}_events.in"))
             config_path = os.path.abspath(os.path.join(volume_output_dir, f"{base_output_name}_molasses.conf"))
-            input_flow_file = os.path.join(volume_output_dir, 'flow_-0') # Where molasses will write it
+            # Molasses *always* writes to 'flow_-0' in the CWD (which is volume_output_dir here)
+            input_flow_file = os.path.join(volume_output_dir, 'flow_-0') 
             output_raster_path = os.path.join(volume_output_dir, f"{base_output_name}.tif") # Output raster path
             plot_filename = os.path.join(volume_output_dir, f"{base_output_name}.png") # Output plot path
+
+            # --- Clean up potentially stale intermediate files from previous failed run --- 
+            # (e.g., flow_-0, partial .tif, .png)
+            stale_files = [input_flow_file, output_raster_path, plot_filename, events_file_path, config_path]
+            for f_path in stale_files:
+                 if os.path.exists(f_path):
+                     try:
+                         os.remove(f_path)
+                         tqdm.write(f"[run_multi_simulation] Removed stale file: {f_path}")
+                     except OSError as e:
+                          tqdm.write(f"[run_multi_simulation] Warning: Could not remove stale file {f_path}: {e}")
 
             # 4. Create events file
             created_events_path = create_events_file(events, events_file_path)
             if not created_events_path:
                 tqdm.write(f"[run_multi_simulation] Error: Failed to create events file '{events_file_path}'. Skipping.")
-                result = {'volume': volume, 'success': False, 'output_file': None, 'elapsed_time': 0.0, 'trench_id': trench_id, 'dem_file': dem_file_base, 'events': events, 'error': 'Event file creation failed'}
+                result = {'volume': volume, 'success': False, 'output_file': None, 'plot_file': None, 'config_file': config_path, 'events_file': None, 'elapsed_time': 0.0, 'trench_id': trench_id, 'dem_file': dem_file_base, 'events': events, 'error': 'Event file creation failed'}
                 volume_results.append(result)
+                if run_key not in previous_results: all_results_flat.append(result)
+                else: # Update the existing entry in the flat list
+                     existing_index = next((i for i, item in enumerate(all_results_flat) if (item['volume'], item['trench_id'], item['dem_file'], item['events']) == run_key), -1)
+                     if existing_index != -1: all_results_flat[existing_index] = result
                 continue
                 
             # --- Run the simulation for this specific DEM/Event/Volume --- 
@@ -880,12 +1012,16 @@ def run_multi_simulation(
             # 1. Create config file
             created_config_path = create_config_file(
                 config_path, parents, elevation_uncert, residual,
-                volume, pulse_volume, runs, abs_dem_path, events_file_path
+                volume, pulse_volume, runs, abs_dem_path, events_file_path # Pass abs event path
             )
             if not created_config_path:
                  tqdm.write(f"[run_multi_simulation] Error: Failed to create config file '{config_path}'. Skipping.")
-                 result = {'volume': volume, 'success': False, 'output_file': None, 'elapsed_time': 0.0, 'trench_id': trench_id, 'dem_file': dem_file_base, 'events': events, 'error': 'Config file creation failed'}
+                 result = {'volume': volume, 'success': False, 'output_file': None, 'plot_file': None, 'config_file': None, 'events_file': events_file_path, 'elapsed_time': 0.0, 'trench_id': trench_id, 'dem_file': dem_file_base, 'events': events, 'error': 'Config file creation failed'}
                  volume_results.append(result)
+                 if run_key not in previous_results: all_results_flat.append(result)
+                 else: # Update the existing entry in the flat list
+                     existing_index = next((i for i, item in enumerate(all_results_flat) if (item['volume'], item['trench_id'], item['dem_file'], item['events']) == run_key), -1)
+                     if existing_index != -1: all_results_flat[existing_index] = result
                  continue
 
             # 2. Run MOLASSES simulation (runs in volume_output_dir)
@@ -894,72 +1030,128 @@ def run_multi_simulation(
             error_msg = None
 
             if success:
-                # 3. Convert MOLASSES output ('flow_-0' in volume_output_dir) to raster
-                final_output_file = convert_molasses(input_flow_file, output_raster_path, resolution=resolution)
-                if not final_output_file:
-                    tqdm.write(f"[run_multi_simulation] Warning: Simulation succeeded but conversion failed for {base_output_name}")
-                    error_msg = 'Conversion failed'
-                    # Simulation technically succeeded, but no raster output
+                # Check if flow_-0 was actually created
+                if not os.path.exists(input_flow_file):
+                     tqdm.write(f"[run_multi_simulation] Error: MOLASSES reported success but flow file {input_flow_file} not found.")
+                     success = False # Mark as failed if output is missing
+                     error_msg = 'MOLASSES output missing'
                 else:
-                     # 4. Plotting (if conversion succeeded and flag is set)
-                     if plot_flag:
-                         tqdm.write(f"[run_multi_simulation] Plotting: {base_output_name}")
-                         plot_and_save_flow(abs_dem_path, final_output_file, coordinates, volume, plot_filename, elapsed_time)
-                     # Cleanup the raw flow file? No, user wants to keep everything.
-                     # if os.path.exists(input_flow_file):
-                     #     try: os.remove(input_flow_file)
-                     #     except OSError as e: tqdm.write(f"[run_multi_simulation] Warning: Could not remove raw flow file {input_flow_file}: {e}")
+                     # 3. Convert MOLASSES output ('flow_-0' in volume_output_dir) to raster
+                     final_output_file = convert_molasses(input_flow_file, output_raster_path, resolution=resolution)
+                     if not final_output_file:
+                         tqdm.write(f"[run_multi_simulation] Warning: Simulation succeeded but conversion failed for {base_output_name}")
+                         error_msg = 'Conversion failed'
+                         # Simulation technically succeeded, but no raster output, so overall success=False for our purpose
+                         success = False 
+                     else:
+                          # 4. Plotting (if conversion succeeded and flag is set)
+                          if plot_flag:
+                              tqdm.write(f"[run_multi_simulation] Plotting: {base_output_name}")
+                              # Ensure plot function gets the absolute DEM path
+                              plot_and_save_flow(abs_dem_path, final_output_file, coordinates, volume, plot_filename, elapsed_time)
+                          # Cleanup the raw flow file now that conversion/plotting is done (optional)
+                          if os.path.exists(input_flow_file):
+                              try: 
+                                   os.remove(input_flow_file)
+                                   tqdm.write(f"[run_multi_simulation] Cleaned up raw flow file: {input_flow_file}")
+                              except OSError as e: 
+                                   tqdm.write(f"[run_multi_simulation] Warning: Could not remove raw flow file {input_flow_file}: {e}")
             else:
                  error_msg = 'MOLASSES execution failed'
+                 # Ensure flow_-0 doesn't linger if molasses failed partway
+                 if os.path.exists(input_flow_file):
+                      try: os.remove(input_flow_file)
+                      except OSError as e: tqdm.write(f"[run_multi_simulation] Warning: Could not remove potentially partial flow file {input_flow_file} after failure: {e}")
             
-            # --- Collect results for this run ---
+            # --- Collect results for this run --- 
+            run_success = success and (final_output_file is not None) # Define overall success
             result = {
                 'volume': volume,
-                'success': success and (final_output_file is not None), # Overall success requires simulation AND conversion
-                'output_file': final_output_file,
-                'plot_file': plot_filename if plot_flag and final_output_file else None,
+                'success': run_success, 
+                'output_file': final_output_file if run_success else None,
+                'plot_file': plot_filename if plot_flag and run_success else None,
                 'config_file': config_path,
                 'events_file': events_file_path,
                 'elapsed_time': elapsed_time,
                 'trench_id': trench_id,
                 'dem_file': dem_file_base,
                 'events': events,
-                'error': error_msg
+                'error': error_msg if not run_success else None
             }
             volume_results.append(result)
-            tqdm.write(f"[run_multi_simulation] Finished run: Vol={volume:.2e}, DEM={dem_file_base}, Trench={trench_id}, Success={result['success']}")
+            # Update or add to the flat list
+            if run_key not in previous_results:
+                 all_results_flat.append(result)
+            else:
+                 existing_index = next((i for i, item in enumerate(all_results_flat) if (item['volume'], item['trench_id'], item['dem_file'], item['events']) == run_key), -1)
+                 if existing_index != -1: all_results_flat[existing_index] = result
+                 else: # Should not happen if run_key was in previous_results, but defensively add
+                      all_results_flat.append(result)
+                      tqdm.write(f"[run_multi_simulation] Warning: run_key {run_key} was in previous_results but not found in all_results_flat for update.")
+
+            tqdm.write(f"[run_multi_simulation] Finished run: Vol={volume:.2e}, DEM={dem_file_base}, Trench={trench_id}, Success={run_success}")
         
-        # --- Finished all DEM/Event pairs for this volume ---
-        results_list.append(volume_results)
+        # --- Finished all DEM/Event pairs for this volume --- 
+        # results_list.append(volume_results) # Don't append here, we build the final list at the end
         
-        # Save intermediate results CSV for this volume
+        # Save intermediate results CSV for this volume (contains only runs processed in *this* execution + skipped runs for this vol)
         volume_results_df = pd.DataFrame(volume_results)
         volume_csv_path = os.path.join(volume_output_dir, "results.csv")
-        volume_results_df.to_csv(volume_csv_path, index=False)
-        tqdm.write(f"[run_multi_simulation] Saved results for volume {volume:.2e} to {volume_csv_path}")
+        try:
+            volume_results_df.to_csv(volume_csv_path, index=False)
+            tqdm.write(f"[run_multi_simulation] Saved/Updated results for volume {volume:.2e} to {volume_csv_path}")
+        except Exception as e:
+             tqdm.write(f"[run_multi_simulation] Error saving results CSV {volume_csv_path}: {e}")
 
-        # --- Progressively update overall summary table ---
-        # Regenerate the flattened list of all results so far
-        all_results_so_far = []
-        for res_vol in results_list:
-            all_results_so_far.extend(res_vol)
-        
-        # Create and save the overall summary table progressively
-        if all_results_so_far: # Ensure there are results to save
-             create_summary_table(results_list, master_output_dir) # Pass the nested list as expected
-             tqdm.write(f"[run_multi_simulation] Progressively updated summary tables in {master_output_dir}")
+        # --- Progressively update overall summary table --- 
+        # Use the *flat* list containing all results (old and new)
+        if all_results_flat:
+             # We need results_list (list of lists) for create_summary_table signature. Rebuild it.
+             temp_results_list_for_summary = []
+             grouped_results = pd.DataFrame(all_results_flat).groupby('volume')
+             for vol, group in grouped_results:
+                  temp_results_list_for_summary.append(group.to_dict('records'))
+                  
+             if temp_results_list_for_summary:
+                  create_summary_table(temp_results_list_for_summary, master_output_dir)
+                  tqdm.write(f"[run_multi_simulation] Progressively updated summary tables in {master_output_dir}")
+             else:
+                  tqdm.write(f"[run_multi_simulation] No results yet to create summary table.")
         # --- End progressive update ---
         
     # --- Finished all volumes --- 
-    tqdm.write("[run_multi_simulation] All volumes simulated. Creating final summaries.")
+    tqdm.write("[run_multi_simulation] All volumes processed. Creating final summaries.")
 
-    # Create summary table and comparison grid in the master directory
-    create_summary_table(results_list, master_output_dir)
-    # Pass necessary info to comparison grid - needs the results list which now contains paths
-    create_comparison_grid(results_list, matrix_df, volume_list, master_output_dir) 
+    # Final Summary Generation using all combined results
+    final_results_list_structured = []
+    if all_results_flat:
+        df_all_results = pd.DataFrame(all_results_flat)
+        # Ensure volume column is float for correct grouping
+        df_all_results['volume'] = df_all_results['volume'].astype(float)
+        grouped_results = df_all_results.groupby('volume')
+        for vol, group in grouped_results:
+            # Ensure volume order matches original volume_list if possible
+            final_results_list_structured.append(group.to_dict('records'))
+            
+        # Sort the structured list based on the volume_list order
+        final_results_list_structured.sort(key=lambda x: volume_list.index(x[0]['volume']))
+
+        create_summary_table(final_results_list_structured, master_output_dir)
+        # Pass necessary info to comparison grid
+        if plot_flag: # Only create grid if plots were generated
+             # Ensure matrix_df is available (it should be, loaded/passed earlier)
+             if matrix_df is not None:
+                  create_comparison_grid(final_results_list_structured, matrix_df, volume_list, master_output_dir)
+             else:
+                  tqdm.write("[run_multi_simulation] Warning: Cannot create comparison grid because matrix_df is missing.")
+        else:
+             tqdm.write("[run_multi_simulation] Skipping comparison grid generation as plotting was disabled.")
+    else:
+        tqdm.write("[run_multi_simulation] No results generated or found. Skipping final summary generation.")
+
     
     tqdm.write(f"[run_multi_simulation] Multi-simulation process complete. Master output: {master_output_dir}")
-    return master_output_dir, results_list
+    return master_output_dir, final_results_list_structured # Return the structured list
 
 def process_results(results: List[Dict[str, Any]], output_dir: str) -> bool:
     """
