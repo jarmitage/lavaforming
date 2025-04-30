@@ -21,6 +21,7 @@ import threading
 import geopandas as gpd
 from geocube.api.core import make_geocube
 from typing import Optional, List, Dict, Tuple, Any, Union
+import pathlib # Added for debug mode file touching
 # sys.path.insert(0, "/home/jovyan/shared/Libraries/")
 # import victor
 
@@ -334,7 +335,8 @@ def run_volume_simulation(
     runs: int,
     dem: str,
     events_file_path: str,
-    resolution: int
+    resolution: int,
+    debug_mode: bool = False
 ) -> Dict[str, Any]:
     """
     Runs a single MOLASSES simulation for a specific volume.
@@ -355,6 +357,7 @@ def run_volume_simulation(
         dem (str): Path to DEM file
         events_file_path (str): Path to events file
         resolution (int): Raster resolution
+        debug_mode (bool): Whether to enable debug mode.
         
     Returns:
         dict: Simulation result information
@@ -508,7 +511,8 @@ def run_simulations(
     events_file_path: str,
     resolution: int,
     coordinates: np.ndarray,
-    plot: bool
+    plot: bool,
+    debug_mode: bool = False
 ) -> List[Dict[str, Any]]:
     """
     Runs the simulation loop for all volumes, saves results, and archives outputs.
@@ -528,6 +532,7 @@ def run_simulations(
         resolution (int): Raster resolution.
         coordinates (np.ndarray): Array of event coordinates.
         plot (bool): Whether to generate plots for each simulation step.
+        debug_mode (bool): Whether to enable debug mode.
     """
     results = []
     plot_threads = [] # Keep track of plotting threads
@@ -535,7 +540,8 @@ def run_simulations(
         result = run_volume_simulation(
             volume, output_dir, dem_file, events,
             parents, elevation_uncert, residual, pulse_volume,
-            runs, dem, events_file_path, resolution
+            runs, dem, events_file_path, resolution,
+            debug_mode=debug_mode
         )
         results.append(result)
         save_results(results, output_dir)
@@ -767,6 +773,7 @@ def run_multi_simulation(
     volume_list: Optional[List[float]], # Made optional for resume mode
     dem_dir: str,
     resume_dir: Optional[str] = None,
+    debug_mode: bool = False, # Added debug mode flag
     **kwargs: Any
 ) -> Tuple[Optional[str], Optional[List[List[Dict[str, Any]]]]]: # Return optional in case of resume failure
     """
@@ -779,6 +786,7 @@ def run_multi_simulation(
         volume_list (list | None): List of volumes to simulate. Required if not resuming.
         dem_dir (str): Directory containing DEM files.
         resume_dir (str | None): Path to a previous multi-simulation output directory to resume.
+        debug_mode (bool): Whether to enable debug mode.
         **kwargs: Additional parameters for simulation (parents, elevation_uncert, 
                   residual, pulse_volume, runs, resolution, plot)
         
