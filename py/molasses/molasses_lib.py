@@ -39,7 +39,6 @@ def load_simulation_matrix(matrix_file):
     Args:
         matrix_file (str): Path to CSV file with columns:
             - dem_file: Base name of DEM file
-            - dem_ext: DEM file extension
             - events: Comma-separated event coordinates
             - trench_id: Identifier for the trench design
             
@@ -483,7 +482,7 @@ def run_simulations(
             runs, dem, events_file_path, resolution
         )
         results.append(result)
-        tqdm.write(f"[run_simulations] Results:\n{results.to_markdown()}")
+        save_results(results, output_dir)
 
         # Start plotting in a separate thread
         if plot and result['success'] and result['output_file']:
@@ -495,7 +494,7 @@ def run_simulations(
             # Create and start a new thread for plotting
             plot_thread = threading.Thread(
                 target=plot_and_save_flow,
-                args=(dem, output_raster_path, coordinates, volume, plot_filename),
+                args=(dem, output_raster_path, coordinates, volume, plot_filename, result['elapsed_time']),
                 daemon=True # Allows main program to exit even if threads are running (optional, but can be useful)
             )
             plot_thread.start()
@@ -512,7 +511,7 @@ def run_simulations(
     print(f"\n[run_simulations] All simulations completed!\n{results.to_markdown()}")
     return results
     
-def plot_and_save_flow(dem, output_raster_path, coordinates, volume, plot_filename):
+def plot_and_save_flow(dem, output_raster_path, coordinates, volume, plot_filename, elapsed_time):
     """
     Generates and saves a plot for a single simulation result to a specific file.
 
@@ -522,6 +521,7 @@ def plot_and_save_flow(dem, output_raster_path, coordinates, volume, plot_filena
         coordinates (np.ndarray): Array of event coordinates.
         volume (float): The simulation volume.
         plot_filename (str): Full path to save the output plot (.png).
+        elapsed_time (float): Time taken for the simulation run.
     """
     try:
         # Ensure we have coordinates to plot
@@ -532,7 +532,7 @@ def plot_and_save_flow(dem, output_raster_path, coordinates, volume, plot_filena
             
         if coordinates.size > 0:
             fig, ax = plt.subplots() # Create figure and axes
-            plot_title = f"Volume: {volume:.2e} m³"
+            plot_title = f"Volume: {volume:.2e} m³, Time: {elapsed_time:.2f}s"
             # victor.plot_flow likely expects raster, not just path? Check victor docs.
             # Assuming victor.plot_flow can handle the raster path:
             victor.plot_flow(dem, output_raster_path, axes=ax, coords=coordinates, zoom=True, title=plot_title)
@@ -825,7 +825,7 @@ def run_multi_simulation(matrix_df, volume_list, dem_dir, **kwargs):
                      # 4. Plotting (if conversion succeeded and flag is set)
                      if plot_flag:
                          tqdm.write(f"[run_multi_simulation] Plotting: {base_output_name}")
-                         plot_and_save_flow(abs_dem_path, final_output_file, coordinates, volume, plot_filename)
+                         plot_and_save_flow(abs_dem_path, final_output_file, coordinates, volume, plot_filename, elapsed_time)
                      # Cleanup the raw flow file? No, user wants to keep everything.
                      # if os.path.exists(input_flow_file):
                      #     try: os.remove(input_flow_file)
@@ -858,7 +858,19 @@ def run_multi_simulation(matrix_df, volume_list, dem_dir, **kwargs):
         volume_csv_path = os.path.join(volume_output_dir, "results.csv")
         volume_results_df.to_csv(volume_csv_path, index=False)
         tqdm.write(f"[run_multi_simulation] Saved results for volume {volume:.2e} to {volume_csv_path}")
-    
+
+        # --- Progressively update overall summary table ---
+        # Regenerate the flattened list of all results so far
+        all_results_so_far = []
+        for res_vol in results_list:
+            all_results_so_far.extend(res_vol)
+        
+        # Create and save the overall summary table progressively
+        if all_results_so_far: # Ensure there are results to save
+             create_summary_table(results_list, master_output_dir) # Pass the nested list as expected
+             tqdm.write(f"[run_multi_simulation] Progressively updated summary tables in {master_output_dir}")
+        # --- End progressive update ---
+        
     # --- Finished all volumes --- 
     tqdm.write("[run_multi_simulation] All volumes simulated. Creating final summaries.")
 
