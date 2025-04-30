@@ -4,5 +4,5 @@ volumes = generate_logarithmic_samples()
 # Display the result
 print("Generated volumes using generate_logarithmic_samples():")
 print(volumes)
-# trench4
-estimate_runtime(volumes, k=0.0001, alpha=1.15)
+# estimate_runtime(volumes, k=0.0001, alpha=1.15) # trench4
+estimate_runtime(volumes, k=0.0001, alpha=1.3) # trench2

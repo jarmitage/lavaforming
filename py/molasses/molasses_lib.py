@@ -177,6 +177,8 @@ def create_config_file(
 def run_molasses(config_path: str, run_dir: str) -> tuple[bool, float]:
     """
     Executes MOLASSES simulation using the given config, running in `run_dir`.
+    Captures stdout/stderr, timestamps each line, prints to console via tqdm.write,
+    and saves to 'molasses_run.log' in run_dir.
     
     Args:
         config_path (str): Absolute path to configuration file
@@ -189,11 +191,14 @@ def run_molasses(config_path: str, run_dir: str) -> tuple[bool, float]:
     # Ensure config_path is absolute for the command, as cwd changes
     abs_config_path = os.path.abspath(config_path)
     molasses_executable = os.path.abspath("./molasses_2022") # Ensure we know where the executable is
+    log_file_path = os.path.join(run_dir, "molasses_run.log")
 
     tqdm.write(f"[run_molasses] Starting MOLASSES simulation.")
     tqdm.write(f"[run_molasses]   Config: {abs_config_path}")
     tqdm.write(f"[run_molasses]   Run directory: {run_dir}")
     tqdm.write(f"[run_molasses]   Executable: {molasses_executable}")
+    tqdm.write(f"[run_molasses]   Log file: {log_file_path}")
+
 
     if not os.path.exists(molasses_executable):
         tqdm.write(f"[run_molasses] Error: molasses_2022 executable not found at {molasses_executable}")
@@ -206,25 +211,54 @@ def run_molasses(config_path: str, run_dir: str) -> tuple[bool, float]:
          return False, 0.0
 
     command = f"{molasses_executable} {abs_config_path}"
+    process = None # Initialize process variable
     try:
-        result = subprocess.run(command, 
-                              shell=True, 
-                              stderr=subprocess.PIPE, # Capture stderr
-                              stdout=subprocess.DEVNULL, # Hide stdout unless needed for debugging
-                              cwd=run_dir, # Run in the target directory
-                              text=True) # Decode stderr
-        elapsed_time = time.time() - start_time
-    except Exception as e:
-        tqdm.write(f"[run_molasses] Exception during subprocess execution: {e}")
-        return False, time.time() - start_time
+        # Use Popen to stream output
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, # Redirect stderr to stdout
+            cwd=run_dir,
+            text=True,
+            bufsize=1 # Line buffered
+        )
 
-    if result.returncode == 0:
-        tqdm.write(f"[run_molasses] Simulation completed successfully in {elapsed_time:.2f} seconds (in {run_dir})")
-        return True, elapsed_time
-    else:
-        tqdm.write(f"[run_molasses] Simulation failed in {elapsed_time:.2f} seconds (in {run_dir}) with return code {result.returncode}")
-        tqdm.write(f"[run_molasses]   Stderr: {result.stderr.strip()}")
+        tqdm.write(f"[run_molasses] MOLASSES process started (PID: {process.pid}). Logging output:")
+        
+        with open(log_file_path, 'a') as log_file: # Open log file in append mode
+            # Stream output line by line
+            for line in iter(process.stdout.readline, ''):
+                if line: # Avoid processing empty lines if readline returns them at the end
+                    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                    timestamped_line = f"[{timestamp}] {line.strip()}"
+                    tqdm.write(timestamped_line) # Write to console via tqdm
+                    log_file.write(timestamped_line + '\\n') # Write to log file
+        
+        # Wait for the process to complete and get the return code
+        return_code = process.wait()
+        elapsed_time = time.time() - start_time
+
+        if return_code == 0:
+            tqdm.write(f"[run_molasses] Simulation completed successfully in {elapsed_time:.2f} seconds (in {run_dir})")
+            return True, elapsed_time
+        else:
+            tqdm.write(f"[run_molasses] Simulation failed in {elapsed_time:.2f} seconds (in {run_dir}) with return code {return_code}")
+            # Note: Stderr is already captured and logged above if redirected
+            return False, elapsed_time
+
+    except Exception as e:
+        elapsed_time = time.time() - start_time
+        tqdm.write(f"[run_molasses] Exception during subprocess execution: {e}")
+        # Ensure process is terminated if started but failed during setup/streaming
+        if process and process.poll() is None:
+            process.terminate()
+            process.wait() # Wait for termination
         return False, elapsed_time
+    finally:
+        # Ensure stdout is closed even if errors occur
+        if process and process.stdout:
+             process.stdout.close()
 
 def convert_molasses(input_flow_file: str, output_raster_path: str, resolution: int = 2) -> Optional[str]:
     """
